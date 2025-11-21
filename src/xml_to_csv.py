@@ -8,9 +8,47 @@ parameter_value, parameter_unit, parameter_low, parameter_high, remark_all
 """
 
 import csv
+import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Tuple, Optional
+
+
+def convert_bilirubin_to_umol(
+    value: str, unit: str, label: str
+) -> Tuple[str, str, str, str]:
+    """
+    Convert bilirubin values from mg/dl to µmol/l if needed.
+
+    Args:
+        value: The parameter value
+        unit: The parameter unit
+        label: The parameter label
+
+    Returns:
+        Tuple of (converted_value, converted_unit, original_value, original_unit)
+        If no conversion needed, returns (value, unit, value, unit)
+    """
+    # Check if this is a bilirubin parameter
+    if not re.search(r"bilirubina", label, re.IGNORECASE):
+        return value, unit, value, unit
+
+    # Check if unit is mg/dl and needs conversion
+    if unit and unit.lower() == "mg/dl":
+        try:
+            # Replace comma with dot for float conversion
+            numeric_value = float(value.replace(",", "."))
+            # Convert mg/dl to µmol/l (multiply by 17.1)
+            converted_value = numeric_value * 17.1
+            # Format with 2 decimal places and use comma as decimal separator
+            converted_value_str = f"{converted_value:.2f}".replace(".", ",")
+            return converted_value_str, "µmol/l", value, unit
+        except (ValueError, AttributeError):
+            # If conversion fails, return original values
+            return value, unit, value, unit
+
+    # No conversion needed
+    return value, unit, value, unit
 
 
 def parse_xml_file(xml_path: Path) -> List[Dict]:
@@ -65,25 +103,58 @@ def parse_xml_file(xml_path: Path) -> List[Dict]:
                 high_elem = parameter.find("high")
                 remark_all_elem = parameter.find("remark_all")
 
+                # Extract raw values
+                param_label = label_elem.text if label_elem is not None else ""
+                param_value = value_elem.text if value_elem is not None else ""
+                param_unit = unit_elem.text if unit_elem is not None else ""
+                param_low = low_elem.text if low_elem is not None else ""
+                param_high = high_elem.text if high_elem is not None else ""
+
+                # Convert bilirubin values if needed
+                (
+                    converted_value,
+                    converted_unit,
+                    original_value,
+                    original_unit,
+                ) = convert_bilirubin_to_umol(param_value, param_unit, param_label)
+
+                # Also convert reference ranges if this is bilirubin
+                if converted_unit != original_unit:
+                    # Convert low range
+                    if param_low:
+                        try:
+                            low_numeric = float(param_low.replace(",", "."))
+                            converted_low = low_numeric * 17.1
+                            param_low = f"{converted_low:.2f}".replace(".", ",")
+                        except (ValueError, AttributeError):
+                            pass
+
+                    # Convert high range
+                    if param_high:
+                        try:
+                            high_numeric = float(param_high.replace(",", "."))
+                            converted_high = high_numeric * 17.1
+                            param_high = f"{converted_high:.2f}".replace(".", ",")
+                        except (ValueError, AttributeError):
+                            pass
+
                 row = {
                     "barcode": barcode,
                     "group": group_name,
                     "date_time": date_time,
                     "external_item_id": external_item_id,
-                    "parameter_label": (
-                        label_elem.text if label_elem is not None else ""
-                    ),
-                    "parameter_value": (
-                        value_elem.text if value_elem is not None else ""
-                    ),
-                    "parameter_unit": unit_elem.text if unit_elem is not None else "",
-                    "parameter_low": low_elem.text if low_elem is not None else "",
-                    "parameter_high": high_elem.text if high_elem is not None else "",
+                    "parameter_label": param_label,
+                    "parameter_value": converted_value,
+                    "parameter_unit": converted_unit,
+                    "parameter_low": param_low,
+                    "parameter_high": param_high,
                     "remark_all": (
                         remark_all_elem.text.strip()
                         if remark_all_elem is not None and remark_all_elem.text
                         else ""
                     ),
+                    "original_value": original_value,
+                    "original_unit": original_unit,
                 }
                 rows.append(row)
 
@@ -134,6 +205,8 @@ def main():
             "parameter_low",
             "parameter_high",
             "remark_all",
+            "original_value",
+            "original_unit",
         ]
 
         with open(output_csv, "w", newline="", encoding="utf-8") as csvfile:
