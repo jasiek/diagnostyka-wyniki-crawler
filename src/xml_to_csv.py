@@ -45,8 +45,8 @@ def convert_units(value: str, unit: str, label: str) -> Tuple[str, str, str, str
                 # If conversion fails, return original values
                 return value, unit, value, unit
 
-    # Check if this is a cholesterol parameter (total or HDL)
-    if re.search(r"cholesterol (całkowity|hdl)", label, re.IGNORECASE):
+    # Check if this is a cholesterol parameter (total, HDL, or LDL)
+    if re.search(r"cholesterol (całkowity|hdl|ldl)", label, re.IGNORECASE):
         # Check if unit is mmol/l and needs conversion
         if unit and unit.lower() == "mmol/l":
             try:
@@ -137,7 +137,7 @@ def parse_xml_file(xml_path: Path) -> List[Dict]:
                     # Determine conversion factor
                     conversion_factor = 17.1  # default for bilirubin
                     if re.search(
-                        r"cholesterol (całkowity|hdl)", param_label, re.IGNORECASE
+                        r"cholesterol (całkowity|hdl|ldl)", param_label, re.IGNORECASE
                     ):
                         conversion_factor = 38.67
 
