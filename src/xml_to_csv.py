@@ -14,11 +14,11 @@ from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 
 
-def convert_bilirubin_to_umol(
-    value: str, unit: str, label: str
-) -> Tuple[str, str, str, str]:
+def convert_units(value: str, unit: str, label: str) -> Tuple[str, str, str, str]:
     """
-    Convert bilirubin values from mg/dl to µmol/l if needed.
+    Convert parameter values to standardized units if needed.
+    - Bilirubin: mg/dl → µmol/l (multiply by 17.1)
+    - Cholesterol: mmol/l → mg/dl (multiply by 38.67)
 
     Args:
         value: The parameter value
@@ -30,22 +30,36 @@ def convert_bilirubin_to_umol(
         If no conversion needed, returns (value, unit, value, unit)
     """
     # Check if this is a bilirubin parameter
-    if not re.search(r"bilirubina", label, re.IGNORECASE):
-        return value, unit, value, unit
+    if re.search(r"bilirubina", label, re.IGNORECASE):
+        # Check if unit is mg/dl and needs conversion
+        if unit and unit.lower() == "mg/dl":
+            try:
+                # Replace comma with dot for float conversion
+                numeric_value = float(value.replace(",", "."))
+                # Convert mg/dl to µmol/l (multiply by 17.1)
+                converted_value = numeric_value * 17.1
+                # Format with 2 decimal places and use comma as decimal separator
+                converted_value_str = f"{converted_value:.2f}".replace(".", ",")
+                return converted_value_str, "µmol/l", value, unit
+            except (ValueError, AttributeError):
+                # If conversion fails, return original values
+                return value, unit, value, unit
 
-    # Check if unit is mg/dl and needs conversion
-    if unit and unit.lower() == "mg/dl":
-        try:
-            # Replace comma with dot for float conversion
-            numeric_value = float(value.replace(",", "."))
-            # Convert mg/dl to µmol/l (multiply by 17.1)
-            converted_value = numeric_value * 17.1
-            # Format with 2 decimal places and use comma as decimal separator
-            converted_value_str = f"{converted_value:.2f}".replace(".", ",")
-            return converted_value_str, "µmol/l", value, unit
-        except (ValueError, AttributeError):
-            # If conversion fails, return original values
-            return value, unit, value, unit
+    # Check if this is a cholesterol parameter
+    if re.search(r"cholesterol całkowity", label, re.IGNORECASE):
+        # Check if unit is mmol/l and needs conversion
+        if unit and unit.lower() == "mmol/l":
+            try:
+                # Replace comma with dot for float conversion
+                numeric_value = float(value.replace(",", "."))
+                # Convert mmol/l to mg/dl (multiply by 38.67)
+                converted_value = numeric_value * 38.67
+                # Format with 2 decimal places and use comma as decimal separator
+                converted_value_str = f"{converted_value:.2f}".replace(".", ",")
+                return converted_value_str, "mg/dl", value, unit
+            except (ValueError, AttributeError):
+                # If conversion fails, return original values
+                return value, unit, value, unit
 
     # No conversion needed
     return value, unit, value, unit
@@ -110,21 +124,26 @@ def parse_xml_file(xml_path: Path) -> List[Dict]:
                 param_low = low_elem.text if low_elem is not None else ""
                 param_high = high_elem.text if high_elem is not None else ""
 
-                # Convert bilirubin values if needed
+                # Convert values if needed (bilirubin, cholesterol, etc.)
                 (
                     converted_value,
                     converted_unit,
                     original_value,
                     original_unit,
-                ) = convert_bilirubin_to_umol(param_value, param_unit, param_label)
+                ) = convert_units(param_value, param_unit, param_label)
 
-                # Also convert reference ranges if this is bilirubin
+                # Also convert reference ranges if unit was converted
                 if converted_unit != original_unit:
+                    # Determine conversion factor
+                    conversion_factor = 17.1  # default for bilirubin
+                    if re.search(r"cholesterol całkowity", param_label, re.IGNORECASE):
+                        conversion_factor = 38.67
+
                     # Convert low range
                     if param_low:
                         try:
                             low_numeric = float(param_low.replace(",", "."))
-                            converted_low = low_numeric * 17.1
+                            converted_low = low_numeric * conversion_factor
                             param_low = f"{converted_low:.2f}".replace(".", ",")
                         except (ValueError, AttributeError):
                             pass
@@ -133,7 +152,7 @@ def parse_xml_file(xml_path: Path) -> List[Dict]:
                     if param_high:
                         try:
                             high_numeric = float(param_high.replace(",", "."))
-                            converted_high = high_numeric * 17.1
+                            converted_high = high_numeric * conversion_factor
                             param_high = f"{converted_high:.2f}".replace(".", ",")
                         except (ValueError, AttributeError):
                             pass
