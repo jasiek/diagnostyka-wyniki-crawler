@@ -1,3 +1,5 @@
+# I VIBED THIS FOR TWO DOLLARS FIFTY
+
 # Diagnostyka Wyniki Crawler
 
 A Python-based web crawler for downloading blood test results from [wyniki.diag.pl](https://wyniki.diag.pl) as XML and PDF files.
