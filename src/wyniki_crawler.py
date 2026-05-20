@@ -3,22 +3,81 @@ Wyniki.diag.pl crawler - retrieves blood test results as XML
 """
 
 import os
+import re
 import asyncio
 from pathlib import Path
 from datetime import datetime
-from playwright.async_api import async_playwright, Page, Browser
+from playwright.async_api import (
+    async_playwright,
+    Page,
+    TimeoutError as PlaywrightTimeoutError,
+)
 from dotenv import load_dotenv
 
 
 class WynikiCrawler:
     """Crawler for wyniki.diag.pl blood test results"""
 
-    def __init__(self, username: str, password: str, download_dir: str = "downloads"):
+    def __init__(
+        self,
+        username: str,
+        password: str,
+        download_dir: str = "downloads",
+        profile_dir: str = ".playwright/wyniki-profile",
+        headless: bool = False,
+        cdp_url: str | None = None,
+        ignore_incapsula: bool = False,
+    ):
         self.username = username
         self.password = password
         self.download_dir = Path(download_dir)
         self.download_dir.mkdir(parents=True, exist_ok=True)
+        self.profile_dir = Path(profile_dir)
+        self.profile_dir.mkdir(parents=True, exist_ok=True)
+        self.headless = headless
+        self.cdp_url = cdp_url
+        self.ignore_incapsula = ignore_incapsula
         self.base_url = "https://wyniki.diag.pl"
+
+    async def is_blocked(self, page: Page) -> bool:
+        """Detect the Imperva/Incapsula block page."""
+        content = await page.content()
+        if self.ignore_incapsula:
+            return False
+        return "Incapsula" in content or "_Incapsula_Resource" in content
+
+    async def is_logged_in(self, page: Page) -> bool:
+        """Check whether the saved browser profile is still authenticated."""
+        print("Checking saved browser session...")
+        await page.goto(f"{self.base_url}/zlecenia", wait_until="domcontentloaded")
+
+        try:
+            await page.wait_for_load_state("networkidle", timeout=10000)
+        except PlaywrightTimeoutError:
+            pass
+
+        await page.wait_for_timeout(1000)
+
+        if await self.is_blocked(page):
+            raise RuntimeError(
+                "wyniki.diag.pl returned an Incapsula block page. "
+                "Open the site in a normal Chrome session and use WYNIKI_CDP_URL, "
+                "or retry later after the block clears."
+            )
+
+        login_inputs = await page.query_selector(
+            "input[name='accountId'], input[name='password']"
+        )
+        if login_inputs:
+            print("Saved browser session is not authenticated.")
+            return False
+
+        if "/zlecenia" in page.url:
+            print("Using saved browser session.")
+            return True
+
+        print("Saved browser session is not authenticated.")
+        return False
 
     async def login(self, page: Page) -> bool:
         """Log into wyniki.diag.pl"""
@@ -28,13 +87,19 @@ class WynikiCrawler:
         # Wait for the page to load (it's a SPA)
         await page.wait_for_timeout(2000)
 
+        if await self.is_blocked(page):
+            raise RuntimeError(
+                "wyniki.diag.pl returned an Incapsula block page before login."
+            )
+
         print(f"Logging in as {self.username}...")
         # Fill in the login form for "Konto Stałego Klienta"
-        await page.fill("input[name='accountId']", self.username)
-        await page.fill("input[name='password']", self.password)
+        account_input = page.locator("input[name='accountId']").first
+        password_input = page.locator("input[name='password']").first
+        await account_input.fill(self.username)
+        await password_input.fill(self.password)
 
-        # Click login button
-        await page.click("button[data-cy='submit-account-btn']")
+        await self.submit_login_form(page, password_input)
 
         # Check if we're redirected to 2FA page
         try:
@@ -53,16 +118,49 @@ class WynikiCrawler:
                 "**/zlecenia**", timeout=120000
             )  # 2 minute timeout for manual entry
             print("✓ Two-factor authentication completed!")
-        except:
+        except PlaywrightTimeoutError:
             # If no 2FA, wait directly for orders list
             await page.wait_for_url("**/zlecenia**", timeout=10000)
 
         print("Login successful!")
         return True
 
+    async def submit_login_form(self, page: Page, password_input) -> None:
+        """Submit the account login form across minor frontend selector changes."""
+        submit_selectors = [
+            "button[data-cy='submit-account-btn']",
+            "button[type='submit']:has-text('Zaloguj')",
+            "button:has-text('Zaloguj się')",
+            "button:has-text('Zaloguj')",
+        ]
+
+        for selector in submit_selectors:
+            locator = page.locator(selector).first
+            try:
+                if await locator.is_visible(timeout=3000):
+                    await locator.click()
+                    return
+            except PlaywrightTimeoutError:
+                continue
+
+        print("Login submit button was not found; submitting password field with Enter.")
+        await password_input.press("Enter")
+
+    async def ensure_logged_in(self, page: Page) -> None:
+        """Use the saved browser session when possible, otherwise log in."""
+        if await self.is_logged_in(page):
+            return
+
+        await self.login(page)
+
     async def get_all_orders(self, page: Page) -> list:
         """Get all order links from the orders list page"""
         print("Fetching all orders...")
+
+        if await self.is_blocked(page):
+            raise RuntimeError(
+                "wyniki.diag.pl returned an Incapsula block page on the orders page."
+            )
 
         orders = []
         current_page = 1
@@ -100,26 +198,25 @@ class WynikiCrawler:
         print(f"Total orders found: {len(orders)}")
         return orders
 
-    async def download_order_files(self, page: Page, order_url: str, order_number: str):
+    async def download_order_files(self, page: Page, order_url: str):
         """Download all XML and PDF files for a specific order"""
-        print(f"Processing order: {order_number}")
-
         # Navigate to order details page
         full_url = (
             f"{self.base_url}{order_url}"
             if not order_url.startswith("http")
             else order_url
         )
-        await page.goto(full_url, wait_until="networkidle")
+        await page.goto(full_url, wait_until="domcontentloaded")
 
-        # Wait for the page to load
-        await page.wait_for_selector("button[data-cy='get-tests-btn']", timeout=5000)
+        # Wait for the order details shell, then let the options/download
+        # controls below determine readiness. The page contains hidden
+        # "Wyniki badań" notification text that is not a reliable wait target.
+        await page.locator("body").wait_for(state="visible", timeout=10000)
+        await page.wait_for_timeout(1000)
+        await self.open_download_options(page)
 
-        # Click the download button to open the dialog
-        await page.click("button[data-cy='get-tests-btn']")
-
-        # Wait for dialog to appear
-        await page.wait_for_timeout(1500)
+        order_number = await self.get_order_number_from_page(page, order_url)
+        print(f"Processing order: {order_number}")
 
         # Find specific download buttons using data-cy attributes and aria-label
         xml_buttons = await page.query_selector_all(
@@ -129,7 +226,7 @@ class WynikiCrawler:
             "button[data-cy='download-file-btn-Pdf']"
         )
         csv_buttons = await page.query_selector_all(
-            "button[aria-label='Pobierz listę badań']"
+            "[aria-label='Pobierz listę badań'], button:has-text('Pobierz listę badań')"
         )
 
         downloaded_count = 0
@@ -196,6 +293,31 @@ class WynikiCrawler:
             await close_button.click()
             await page.wait_for_timeout(500)
 
+    async def open_download_options(self, page: Page) -> None:
+        """Open the current download/options UI when it is collapsed."""
+        download_buttons = await page.locator(
+            "button[data-cy^='download-file-btn-'], [aria-label='Pobierz listę badań']"
+        ).count()
+        if download_buttons:
+            return
+
+        option_selectors = [
+            "button[data-cy='get-tests-btn']",
+            "button:has-text('Opcje')",
+            "[role='button']:has-text('Opcje')",
+        ]
+        for selector in option_selectors:
+            locator = page.locator(selector).first
+            try:
+                if await locator.is_visible(timeout=3000):
+                    await locator.click()
+                    await page.wait_for_timeout(1000)
+                    return
+            except PlaywrightTimeoutError:
+                continue
+
+        raise RuntimeError("Could not find the order download/options control")
+
     async def get_order_number_from_page(self, page: Page, order_url: str) -> str:
         """Extract order number from the order details page"""
         # Try multiple methods to extract order number
@@ -216,7 +338,13 @@ class WynikiCrawler:
             if text and len(text) > 5 and text[-1] == "L" and text[:-1].isdigit():
                 return text.strip()
 
-        # Method 3: Extract from URL path as last resort
+        # Method 3: Search all visible page text for a barcode-like value
+        page_text = await page.locator("body").inner_text()
+        match = re.search(r"\b\d{6,}L\b", page_text)
+        if match:
+            return match.group(0)
+
+        # Method 4: Extract from URL path as last resort
         # URL format: /zlecenie/some-encrypted-id
         # Use the encrypted ID with timestamp for uniqueness
         url_parts = order_url.split("/")
@@ -232,51 +360,73 @@ class WynikiCrawler:
     async def crawl(self):
         """Main crawl function"""
         async with async_playwright() as p:
-            # Launch browser
-            browser = await p.chromium.launch(headless=False)
-            context = await browser.new_context()
-            page = await context.new_page()
-
-            try:
-                # Login
-                await self.login(page)
-
-                # Get all orders
-                order_urls = await self.get_all_orders(page)
-
-                # Process each order
-                for i, order_url in enumerate(order_urls, 1):
-                    print(f"\n[{i}/{len(order_urls)}] Processing order...")
-
-                    # Navigate to order page to get order number
-                    full_url = (
-                        f"{self.base_url}{order_url}"
-                        if not order_url.startswith("http")
-                        else order_url
-                    )
-                    await page.goto(full_url, wait_until="networkidle")
-
-                    # Get order number (pass order_url for fallback identification)
-                    order_number = await self.get_order_number_from_page(
-                        page, order_url
-                    )
-
-                    # Download all files (XML, PDF, and CSV)
-                    try:
-                        await self.download_order_files(page, order_url, order_number)
-                    except Exception as e:
-                        print(f"Error downloading files for order {order_number}: {e}")
-                        continue
-
-                    # Small delay between requests
-                    await page.wait_for_timeout(1000)
-
-                print(
-                    f"\n✓ Crawl completed! Downloaded {len(order_urls)} orders to {self.download_dir}"
+            if self.cdp_url:
+                browser = await p.chromium.connect_over_cdp(self.cdp_url)
+                context = browser.contexts[0]
+                page = next(
+                    (
+                        candidate
+                        for candidate in context.pages
+                        if candidate.url.startswith(self.base_url)
+                    ),
+                    context.pages[0] if context.pages else await context.new_page(),
                 )
 
+                try:
+                    await self.run_crawl(page, trust_current_page=True)
+                finally:
+                    await browser.close()
+                return
+
+            # Persistent context keeps cookies, local storage, IndexedDB, and
+            # other browser profile data so 2FA/session state can survive runs.
+            context = await p.chromium.launch_persistent_context(
+                user_data_dir=str(self.profile_dir),
+                headless=self.headless,
+                accept_downloads=True,
+            )
+            page = context.pages[0] if context.pages else await context.new_page()
+
+            try:
+                await self.run_crawl(page)
+
             finally:
-                await browser.close()
+                await context.close()
+
+    async def run_crawl(self, page: Page, trust_current_page: bool = False) -> None:
+        """Run the crawl using an already-created page."""
+        if trust_current_page:
+            print(f"Using current browser page: {page.url}")
+            if "/zlecenia/laboratoryjne?" not in page.url:
+                await page.goto(
+                    f"{self.base_url}/zlecenia/laboratoryjne?page=1",
+                    wait_until="domcontentloaded",
+                )
+                await page.wait_for_timeout(1000)
+        else:
+            # Login only when the saved session has expired.
+            await self.ensure_logged_in(page)
+
+        # Get all orders
+        order_urls = await self.get_all_orders(page)
+
+        # Process each order
+        for i, order_url in enumerate(order_urls, 1):
+            print(f"\n[{i}/{len(order_urls)}] Processing order...")
+
+            # Download all files (XML, PDF, and CSV)
+            try:
+                await self.download_order_files(page, order_url)
+            except Exception as e:
+                print(f"Error downloading files for order {order_url}: {e}")
+                continue
+
+            # Small delay between requests
+            await page.wait_for_timeout(1000)
+
+        print(
+            f"\n✓ Crawl completed! Downloaded {len(order_urls)} orders to {self.download_dir}"
+        )
 
 
 async def main():
@@ -292,8 +442,25 @@ async def main():
             "WYNIKI_USERNAME and WYNIKI_PASSWORD must be set in tests/.env file"
         )
 
+    profile_dir = os.getenv("WYNIKI_PROFILE_DIR", ".playwright/wyniki-profile")
+    headless = os.getenv("WYNIKI_HEADLESS", "").lower() in {"1", "true", "yes"}
+    cdp_url = os.getenv("WYNIKI_CDP_URL")
+    ignore_incapsula = os.getenv("WYNIKI_IGNORE_INCAPSULA", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
     # Create crawler and run
-    crawler = WynikiCrawler(username, password, download_dir="downloads/xml_results")
+    crawler = WynikiCrawler(
+        username,
+        password,
+        download_dir="downloads/xml_results",
+        profile_dir=profile_dir,
+        headless=headless,
+        cdp_url=cdp_url,
+        ignore_incapsula=ignore_incapsula,
+    )
     await crawler.crawl()
 
 

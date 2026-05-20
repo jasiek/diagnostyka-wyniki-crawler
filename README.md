@@ -15,11 +15,11 @@ A Python-based web crawler for downloading blood test results from [wyniki.diag.
 - ✅ Handles multiple download links per order
 - ✅ Graceful error handling and progress reporting
 - ✅ Headless or visible browser mode
+- ✅ Persistent browser session so cookies, 2FA state, and visited-page storage can survive between runs
 
 ## Prerequisites
 
-- Python 3.12+
-- Poetry (Python dependency management)
+- uv (Python and dependency management)
 - Valid wyniki.diag.pl account credentials
 
 ## Installation
@@ -32,12 +32,15 @@ cd diagnostyka-wyniki-crawler
 
 2. Install dependencies:
 ```bash
-poetry install
+uv sync
 ```
+
+This uses the Python version pinned in `.python-version` and installs it if
+needed.
 
 3. Install Playwright browsers:
 ```bash
-poetry run playwright install chromium
+uv run playwright install chromium
 ```
 
 4. Create credentials file:
@@ -58,13 +61,14 @@ WYNIKI_PASSWORD=your_password
 Run the crawler to download all available blood test results:
 
 ```bash
-poetry run python src/wyniki_crawler.py
+uv run python src/wyniki_crawler.py
 ```
 
 ### What Happens
 
-1. **Login**: The script navigates to wyniki.diag.pl and logs in with your credentials
-2. **2FA**: If two-factor authentication is required, you'll see a prompt:
+1. **Session check**: The script opens a persistent browser profile and checks whether it is already logged in
+2. **Login**: If the saved session is missing or expired, the script navigates to wyniki.diag.pl and logs in with your credentials
+3. **2FA**: If two-factor authentication is required, you'll see a prompt:
    ```
    ============================================================
    ⚠️  TWO-FACTOR AUTHENTICATION REQUIRED
@@ -75,9 +79,9 @@ poetry run python src/wyniki_crawler.py
    ```
    Enter the SMS code in the browser window that opens, and the script will continue automatically.
 
-3. **Fetch Orders**: The script retrieves all order links from the orders list, handling pagination automatically
+4. **Fetch Orders**: The script retrieves all order links from the orders list, handling pagination automatically
 
-4. **Download Files**: For each order, the script:
+5. **Download Files**: For each order, the script:
    - Opens the order details page
    - Extracts the order number
    - Downloads all available XML files (detailed test results)
@@ -89,7 +93,7 @@ poetry run python src/wyniki_crawler.py
      - `{order_number}_pdf1.pdf`, `{order_number}_pdf2.pdf`
      - `{order_number}_csv1.csv`, `{order_number}_csv2.csv`
 
-5. **Results**: All files are saved to `downloads/xml_results/`
+6. **Results**: All files are saved to `downloads/xml_results/`
 
 ### Output Example
 
@@ -132,6 +136,30 @@ Processing order: 402337694L
 
 ## Configuration
 
+### Saved Browser Session
+
+By default, the crawler stores its browser profile in `.playwright/wyniki-profile`.
+That profile keeps cookies, local storage, IndexedDB, and similar browser state,
+so after you complete login and 2FA once, later runs can usually skip the login
+step until the website expires the session.
+
+To use a different profile directory:
+
+```env
+WYNIKI_PROFILE_DIR=.playwright/my-wyniki-profile
+```
+
+If the saved session gets stuck or you want to force a fresh login, delete the
+profile directory and run the crawler again.
+
+If the site only works after you manually prepare an already-open Playwright
+browser window, start that browser with remote debugging against the same
+profile and run:
+
+```bash
+WYNIKI_CDP_URL=http://127.0.0.1:9222 WYNIKI_IGNORE_INCAPSULA=true uv run python src/wyniki_crawler.py
+```
+
 ### Custom Download Directory
 
 You can specify a custom download directory by modifying the `main()` function in `src/wyniki_crawler.py`:
@@ -142,10 +170,10 @@ crawler = WynikiCrawler(username, password, download_dir="my_custom_directory")
 
 ### Headless Mode
 
-To run in headless mode (no visible browser), change the browser launch settings:
+To run in headless mode (no visible browser), set:
 
-```python
-browser = await p.chromium.launch(headless=True)  # Set to True
+```env
+WYNIKI_HEADLESS=true
 ```
 
 ## Project Structure
@@ -161,7 +189,9 @@ diagnostyka-wyniki-crawler/
 ├── downloads/
 │   └── xml_results/             # Downloaded files
 ├── SITE_STRUCTURE.md            # Detailed site structure documentation
-├── pyproject.toml               # Poetry dependencies
+├── .python-version              # Python version used by uv
+├── pyproject.toml               # uv project dependencies
+├── uv.lock                      # Locked Python dependencies
 └── README.md                    # This file
 ```
 
@@ -223,7 +253,7 @@ See [SITE_STRUCTURE.md](SITE_STRUCTURE.md)
 - This typically indicates a change in the website's HTML structure
 
 ### Browser doesn't open
-- Ensure Playwright browsers are installed: `poetry run playwright install chromium`
+- Ensure Playwright browsers are installed: `uv run playwright install chromium`
 - Check if Chromium is properly installed in your system
 
 ## Development
@@ -242,7 +272,7 @@ The crawler uses Playwright for browser automation. Key methods:
 Run the crawler in visible mode (default) to watch the automation and debug issues:
 
 ```bash
-poetry run python src/wyniki_crawler.py
+uv run python src/wyniki_crawler.py
 ```
 
 ## License

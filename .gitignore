@@ -1,2 +1,7 @@
 downloads/
 mcp-servers/
+.venv/
+.playwright/
+.chrome-wyniki-profile/
+tests/.env
+__pycache__/
