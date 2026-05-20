@@ -1,23 +1,22 @@
-[tool.poetry]
+[project]
 name = "diagnostyka-wyniki-crawler"
 version = "0.1.0"
-description = "Skeleton for the diagnostyka wyniki crawler."
-authors = ["diagnostyka-wyniki team <info@example.com>"]
-license = "MIT"
+description = "Crawler for downloading Diagnostyka lab results."
 readme = "README.md"
-package-mode = false
+requires-python = "==3.12.11"
+license = { text = "MIT" }
+authors = [
+    { name = "diagnostyka-wyniki team", email = "info@example.com" },
+]
+dependencies = [
+    "playwright>=1.55.0,<2",
+    "python-dotenv>=1.0.0,<2",
+]
 
-[tool.poetry.dependencies]
-python = "3.12.11"
-playwright = "^1.55.0"
-python-dotenv = "^1.0.0"
+[dependency-groups]
+dev = [
+    "pytest>=7.4,<8",
+]
 
-[tool.poetry.dev-dependencies]
-pytest = "^7.4"
-
-[tool.poetry.scripts]
-wyniki-crawler = "diagnostyka_wyniki_crawler.crawler:main"
-
-[build-system]
-requires = ["poetry-core>=1.6.0"]
-build-backend = "poetry.core.masonry.api"
+[tool.uv]
+package = false
