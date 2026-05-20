@@ -152,9 +152,17 @@ WYNIKI_PROFILE_DIR=.playwright/my-wyniki-profile
 If the saved session gets stuck or you want to force a fresh login, delete the
 profile directory and run the crawler again.
 
-If the site only works after you manually prepare an already-open Playwright
-browser window, start that browser with remote debugging against the same
-profile and run:
+If the site blocks fresh automated sessions, use the interactive one-command
+flow. It opens the same persistent browser profile, waits while you log in or
+clear the page manually, then continues the crawl after you press Enter in the
+terminal:
+
+```bash
+uv run python src/wyniki_crawler.py --interactive-browser
+```
+
+If you already have a prepared Playwright browser running with remote debugging,
+you can attach to it directly:
 
 ```bash
 WYNIKI_CDP_URL=http://127.0.0.1:9222 WYNIKI_IGNORE_INCAPSULA=true uv run python src/wyniki_crawler.py

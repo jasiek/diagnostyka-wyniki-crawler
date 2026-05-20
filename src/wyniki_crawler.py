@@ -5,6 +5,7 @@ Wyniki.diag.pl crawler - retrieves blood test results as XML
 import os
 import re
 import asyncio
+import argparse
 from pathlib import Path
 from datetime import datetime
 from playwright.async_api import (
@@ -27,6 +28,8 @@ class WynikiCrawler:
         headless: bool = False,
         cdp_url: str | None = None,
         ignore_incapsula: bool = False,
+        interactive_browser: bool = False,
+        remote_debugging_port: int = 9222,
     ):
         self.username = username
         self.password = password
@@ -37,6 +40,8 @@ class WynikiCrawler:
         self.headless = headless
         self.cdp_url = cdp_url
         self.ignore_incapsula = ignore_incapsula
+        self.interactive_browser = interactive_browser
+        self.remote_debugging_port = remote_debugging_port
         self.base_url = "https://wyniki.diag.pl"
 
     async def is_blocked(self, page: Page) -> bool:
@@ -360,6 +365,10 @@ class WynikiCrawler:
     async def crawl(self):
         """Main crawl function"""
         async with async_playwright() as p:
+            if self.interactive_browser:
+                await self.crawl_with_interactive_browser(p)
+                return
+
             if self.cdp_url:
                 browser = await p.chromium.connect_over_cdp(self.cdp_url)
                 context = browser.contexts[0]
@@ -392,6 +401,32 @@ class WynikiCrawler:
 
             finally:
                 await context.close()
+
+    async def crawl_with_interactive_browser(self, playwright) -> None:
+        """Launch one visible browser, wait for manual prep, then crawl it."""
+        context = await playwright.chromium.launch_persistent_context(
+            user_data_dir=str(self.profile_dir),
+            headless=False,
+            accept_downloads=True,
+            args=[f"--remote-debugging-port={self.remote_debugging_port}"],
+        )
+        page = context.pages[0] if context.pages else await context.new_page()
+
+        try:
+            await page.goto(self.base_url, wait_until="domcontentloaded")
+            print("\nInteractive browser is open.")
+            print("Use it to log in and open the laboratory orders page.")
+            print("Leave the browser window open, then press Enter here to crawl.")
+            try:
+                await asyncio.to_thread(input)
+            except EOFError:
+                print("No interactive stdin is available; exiting without crawling.")
+                return
+
+            self.ignore_incapsula = True
+            await self.run_crawl(page, trust_current_page=True)
+        finally:
+            await context.close()
 
     async def run_crawl(self, page: Page, trust_current_page: bool = False) -> None:
         """Run the crawl using an already-created page."""
@@ -431,6 +466,47 @@ class WynikiCrawler:
 
 async def main():
     """Main entry point"""
+    parser = argparse.ArgumentParser(
+        description="Download lab result files from wyniki.diag.pl."
+    )
+    parser.add_argument(
+        "--interactive-browser",
+        action="store_true",
+        help="Open a visible browser, wait for manual login/page prep, then crawl.",
+    )
+    parser.add_argument(
+        "--cdp-url",
+        default=os.getenv("WYNIKI_CDP_URL"),
+        help="Attach to an already-running browser over Chrome DevTools Protocol.",
+    )
+    parser.add_argument(
+        "--ignore-incapsula",
+        action="store_true",
+        help="Skip Incapsula block-page detection. Useful with prepared browser sessions.",
+    )
+    parser.add_argument(
+        "--profile-dir",
+        default=os.getenv("WYNIKI_PROFILE_DIR", ".playwright/wyniki-profile"),
+        help="Persistent browser profile directory.",
+    )
+    parser.add_argument(
+        "--download-dir",
+        default=os.getenv("WYNIKI_DOWNLOAD_DIR", "downloads/xml_results"),
+        help="Directory for downloaded XML, PDF, and CSV files.",
+    )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run the normal persistent browser in headless mode.",
+    )
+    parser.add_argument(
+        "--remote-debugging-port",
+        type=int,
+        default=int(os.getenv("WYNIKI_REMOTE_DEBUGGING_PORT", "9222")),
+        help="Remote debugging port used by --interactive-browser.",
+    )
+    args = parser.parse_args()
+
     # Load environment variables
     load_dotenv("tests/.env")
 
@@ -442,10 +518,13 @@ async def main():
             "WYNIKI_USERNAME and WYNIKI_PASSWORD must be set in tests/.env file"
         )
 
-    profile_dir = os.getenv("WYNIKI_PROFILE_DIR", ".playwright/wyniki-profile")
-    headless = os.getenv("WYNIKI_HEADLESS", "").lower() in {"1", "true", "yes"}
-    cdp_url = os.getenv("WYNIKI_CDP_URL")
-    ignore_incapsula = os.getenv("WYNIKI_IGNORE_INCAPSULA", "").lower() in {
+    env_headless = os.getenv("WYNIKI_HEADLESS", "").lower() in {"1", "true", "yes"}
+    env_ignore_incapsula = os.getenv("WYNIKI_IGNORE_INCAPSULA", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    env_interactive_browser = os.getenv("WYNIKI_INTERACTIVE_BROWSER", "").lower() in {
         "1",
         "true",
         "yes",
@@ -455,11 +534,13 @@ async def main():
     crawler = WynikiCrawler(
         username,
         password,
-        download_dir="downloads/xml_results",
-        profile_dir=profile_dir,
-        headless=headless,
-        cdp_url=cdp_url,
-        ignore_incapsula=ignore_incapsula,
+        download_dir=args.download_dir,
+        profile_dir=args.profile_dir,
+        headless=args.headless or env_headless,
+        cdp_url=args.cdp_url,
+        ignore_incapsula=args.ignore_incapsula or env_ignore_incapsula,
+        interactive_browser=args.interactive_browser or env_interactive_browser,
+        remote_debugging_port=args.remote_debugging_port,
     )
     await crawler.crawl()
 
