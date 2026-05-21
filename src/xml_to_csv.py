@@ -19,6 +19,7 @@ def convert_units(value: str, unit: str, label: str) -> Tuple[str, str, str, str
     Convert parameter values to standardized units if needed.
     - Bilirubin: mg/dl → µmol/l (multiply by 17.1)
     - Cholesterol: mmol/l → mg/dl (multiply by 38.67)
+    - Creatinine: mg/dl → µmol/l (multiply by 88.4)
 
     Args:
         value: The parameter value
@@ -57,6 +58,22 @@ def convert_units(value: str, unit: str, label: str) -> Tuple[str, str, str, str
                 # Format with 2 decimal places and use comma as decimal separator
                 converted_value_str = f"{converted_value:.2f}".replace(".", ",")
                 return converted_value_str, "mg/dl", value, unit
+            except (ValueError, AttributeError):
+                # If conversion fails, return original values
+                return value, unit, value, unit
+
+    # Check if this is a creatinine parameter
+    if re.search(r"kreatynina", label, re.IGNORECASE):
+        # Check if unit is mg/dl and needs conversion
+        if unit and unit.lower() == "mg/dl":
+            try:
+                # Replace comma with dot for float conversion
+                numeric_value = float(value.replace(",", "."))
+                # Convert mg/dl to µmol/l (multiply by 88.4)
+                converted_value = numeric_value * 88.4
+                # Format with 2 decimal places and use comma as decimal separator
+                converted_value_str = f"{converted_value:.2f}".replace(".", ",")
+                return converted_value_str, "µmol/l", value, unit
             except (ValueError, AttributeError):
                 # If conversion fails, return original values
                 return value, unit, value, unit
@@ -142,6 +159,8 @@ def parse_xml_file(xml_path: Path) -> List[Dict]:
                         re.IGNORECASE,
                     ):
                         conversion_factor = 38.67
+                    elif re.search(r"kreatynina", param_label, re.IGNORECASE):
+                        conversion_factor = 88.4
 
                     # Convert low range
                     if param_low:
