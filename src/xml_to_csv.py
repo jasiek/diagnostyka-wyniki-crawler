@@ -14,12 +14,43 @@ from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 
 
+# Unit conversion factors (conventional ↔ SI).
+#
+# Lipids — cholesterol (total/HDL/LDL) and triglycerides:
+#   AHRQ Comparative Effectiveness Review No. 24, Appendix A "Lipid Conversion
+#   Factors". Rugge B, Balshem H, Sehgal R, et al. Screening and Treatment of
+#   Subclinical Hypothyroidism or Hyperthyroidism. Rockville (MD): Agency for
+#   Healthcare Research and Quality (US); 2011 Oct.
+#   https://www.ncbi.nlm.nih.gov/books/NBK83505/
+#   Cross-checked against NCEP ATP III final report (AHA Circulation 2002),
+#   which uses the rounded triglyceride factor 88.6.
+#   https://www.ahajournals.org/doi/10.1161/circ.106.25.3227
+#
+# Glucose: derived from molecular weight 180.156 g/mol (C₆H₁₂O₆);
+#   factor = MW / 10 = 18.0156.
+#
+# Creatinine: derived from molecular weight 113.12 g/mol (C₄H₇N₃O);
+#   factor = 10000 / MW ≈ 88.4. Matches the widely-cited clinical value
+#   (e.g. R `physiology` package `creatinine_mgdl_to_uM`).
+#
+# Bilirubin: derived from molecular weight 584.67 g/mol (C₃₃H₃₆N₄O₆);
+#   factor = 10000 / MW ≈ 17.104. Matches LABOKLIN SI calculator
+#   (https://laboklin.com/en/specialist-information/si-calculator/).
+BILIRUBIN_MGDL_TO_UMOLL = 17.104
+CHOLESTEROL_MMOLL_TO_MGDL = 38.67
+CREATININE_MGDL_TO_UMOLL = 88.4
+GLUCOSE_MMOLL_TO_MGDL = 18.0156
+TRIGLYCERIDES_MMOLL_TO_MGDL = 88.57
+
+
 def convert_units(value: str, unit: str, label: str) -> Tuple[str, str, str, str]:
     """
     Convert parameter values to standardized units if needed.
-    - Bilirubin: mg/dl → µmol/l (multiply by 17.1)
-    - Cholesterol: mmol/l → mg/dl (multiply by 38.67)
-    - Creatinine: mg/dl → µmol/l (multiply by 88.4)
+    - Bilirubin: mg/dl → µmol/l (× BILIRUBIN_MGDL_TO_UMOLL)
+    - Cholesterol: mmol/l → mg/dl (× CHOLESTEROL_MMOLL_TO_MGDL)
+    - Creatinine: mg/dl → µmol/l (× CREATININE_MGDL_TO_UMOLL)
+    - Glucose: mmol/l → mg/dl (× GLUCOSE_MMOLL_TO_MGDL)
+    - Triglycerides: mmol/l → mg/dl (× TRIGLYCERIDES_MMOLL_TO_MGDL)
 
     Args:
         value: The parameter value
@@ -37,8 +68,8 @@ def convert_units(value: str, unit: str, label: str) -> Tuple[str, str, str, str
             try:
                 # Replace comma with dot for float conversion
                 numeric_value = float(value.replace(",", "."))
-                # Convert mg/dl to µmol/l (multiply by 17.1)
-                converted_value = numeric_value * 17.1
+                # Convert mg/dl to µmol/l
+                converted_value = numeric_value * BILIRUBIN_MGDL_TO_UMOLL
                 # Format with 2 decimal places and use comma as decimal separator
                 converted_value_str = f"{converted_value:.2f}".replace(".", ",")
                 return converted_value_str, "µmol/l", value, unit
@@ -53,8 +84,8 @@ def convert_units(value: str, unit: str, label: str) -> Tuple[str, str, str, str
             try:
                 # Replace comma with dot for float conversion
                 numeric_value = float(value.replace(",", "."))
-                # Convert mmol/l to mg/dl (multiply by 38.67)
-                converted_value = numeric_value * 38.67
+                # Convert mmol/l to mg/dl
+                converted_value = numeric_value * CHOLESTEROL_MMOLL_TO_MGDL
                 # Format with 2 decimal places and use comma as decimal separator
                 converted_value_str = f"{converted_value:.2f}".replace(".", ",")
                 return converted_value_str, "mg/dl", value, unit
@@ -69,11 +100,43 @@ def convert_units(value: str, unit: str, label: str) -> Tuple[str, str, str, str
             try:
                 # Replace comma with dot for float conversion
                 numeric_value = float(value.replace(",", "."))
-                # Convert mg/dl to µmol/l (multiply by 88.4)
-                converted_value = numeric_value * 88.4
+                # Convert mg/dl to µmol/l
+                converted_value = numeric_value * CREATININE_MGDL_TO_UMOLL
                 # Format with 2 decimal places and use comma as decimal separator
                 converted_value_str = f"{converted_value:.2f}".replace(".", ",")
                 return converted_value_str, "µmol/l", value, unit
+            except (ValueError, AttributeError):
+                # If conversion fails, return original values
+                return value, unit, value, unit
+
+    # Check if this is a glucose parameter
+    if re.search(r"glukoza", label, re.IGNORECASE):
+        # Check if unit is mmol/l and needs conversion
+        if unit and unit.lower() == "mmol/l":
+            try:
+                # Replace comma with dot for float conversion
+                numeric_value = float(value.replace(",", "."))
+                # Convert mmol/l to mg/dl
+                converted_value = numeric_value * GLUCOSE_MMOLL_TO_MGDL
+                # Format with 2 decimal places and use comma as decimal separator
+                converted_value_str = f"{converted_value:.2f}".replace(".", ",")
+                return converted_value_str, "mg/dl", value, unit
+            except (ValueError, AttributeError):
+                # If conversion fails, return original values
+                return value, unit, value, unit
+
+    # Check if this is a triglycerides parameter
+    if re.search(r"triglicerydy", label, re.IGNORECASE):
+        # Check if unit is mmol/l and needs conversion
+        if unit and unit.lower() == "mmol/l":
+            try:
+                # Replace comma with dot for float conversion
+                numeric_value = float(value.replace(",", "."))
+                # Convert mmol/l to mg/dl
+                converted_value = numeric_value * TRIGLYCERIDES_MMOLL_TO_MGDL
+                # Format with 2 decimal places and use comma as decimal separator
+                converted_value_str = f"{converted_value:.2f}".replace(".", ",")
+                return converted_value_str, "mg/dl", value, unit
             except (ValueError, AttributeError):
                 # If conversion fails, return original values
                 return value, unit, value, unit
@@ -151,16 +214,20 @@ def parse_xml_file(xml_path: Path) -> List[Dict]:
 
                 # Also convert reference ranges if unit was converted
                 if converted_unit != original_unit:
-                    # Determine conversion factor
-                    conversion_factor = 17.1  # default for bilirubin
+                    # Determine conversion factor (see module-level constants for citations)
+                    conversion_factor = BILIRUBIN_MGDL_TO_UMOLL
                     if re.search(
                         r"cholesterol (całkowity|hdl|ldl|nie-hdl)",
                         param_label,
                         re.IGNORECASE,
                     ):
-                        conversion_factor = 38.67
+                        conversion_factor = CHOLESTEROL_MMOLL_TO_MGDL
                     elif re.search(r"kreatynina", param_label, re.IGNORECASE):
-                        conversion_factor = 88.4
+                        conversion_factor = CREATININE_MGDL_TO_UMOLL
+                    elif re.search(r"glukoza", param_label, re.IGNORECASE):
+                        conversion_factor = GLUCOSE_MMOLL_TO_MGDL
+                    elif re.search(r"triglicerydy", param_label, re.IGNORECASE):
+                        conversion_factor = TRIGLYCERIDES_MMOLL_TO_MGDL
 
                     # Convert low range
                     if param_low:
